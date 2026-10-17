@@ -53,7 +53,31 @@ def training_indices(times: np.ndarray, group: dict) -> np.ndarray:
         if not np.any(near):
             raise ValueError('Отметка события за пределами выбранных кадров; проверьте разметку.')
         mask |= near
+    mask |= reviewed_window_mask(times, group)
+    if not np.any(mask):
+        raise ValueError('Для положительного видео нет обучающих окон.')
     return np.flatnonzero(mask)
+
+
+def reviewed_window_mask(times: np.ndarray, group: dict) -> np.ndarray:
+    mask = np.zeros(len(times), dtype=bool)
+    for interval in group.get('reviewed_intervals', []):
+        start, end = interval['start_sec'], interval['end_sec']
+        inside = (times >= start) & (times <= end)
+        if not np.any(inside):
+            midpoint = (start + end) / 2
+            index = int(np.argmin(abs(times - midpoint)))
+            # A short action may lie between sampled frames. Its temporal context must contain it.
+            context_start, context_end = times[max(0, index - 1)], times[min(len(times) - 1, index + 1)]
+            if abs(times[index] - midpoint) > 1.01 or not context_start <= midpoint <= context_end:
+                raise ValueError('Нет подходящего временного окна для ручной отметки.')
+            inside[index] = True
+        mask |= inside
+    return mask
+
+
+def training_multipliers(times: np.ndarray, group: dict, indices: np.ndarray) -> np.ndarray:
+    return np.where(reviewed_window_mask(times, group)[indices], 2., 1.)
 
 
 def temporal_features(vectors: np.ndarray) -> np.ndarray:
@@ -142,9 +166,11 @@ def train_experiment(split: dict, features: dict, output: Path) -> dict:
         data = features[group['sha256']]
         indices = training_indices(data['times'], group)
         x = data['features'][indices]
+        multipliers = training_multipliers(data['times'], group, indices)
         xs.append(x)
         ys.extend([int(group['label'] == 'violation')] * len(x))
-        ws.extend([len(split['train']) / (2 * counts[group['label']] * len(x))] * len(x))
+        per_video = len(split['train']) / (2 * counts[group['label']])
+        ws.extend(per_video * multipliers / multipliers.sum())
     x, y, weights = np.concatenate(xs), np.asarray(ys), np.asarray(ws)
 
     def score_groups(model, groups):
