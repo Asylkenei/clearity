@@ -11,7 +11,7 @@ from typing import Annotated
 
 from dotenv import dotenv_values
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 
@@ -26,18 +26,25 @@ log = logging.getLogger(__name__)
 
 def create_app(api_key: str | None = None, data_dir: Path | None = None,
                max_upload_bytes: int = 100 * 1024 * 1024,
-               dataset_dir: Path | None = None) -> FastAPI:
+               dataset_dir: Path | None = None,
+               public_mode: bool | None = None) -> FastAPI:
     """Создаём приложение. Параметры позволяют проверять его в изоляции."""
     config = dotenv_values(ROOT / ".env")
-    api_key = api_key or os.environ.get("FORTE_API_KEY") or config.get("FORTE_API_KEY")
+    if public_mode is None:
+        public_mode = str(os.environ.get("FORTE_PUBLIC_MODE", "0")).lower() in ("1", "true", "yes")
+    key_name = "FORTE_PUBLIC_API_KEY" if public_mode else "FORTE_API_KEY"
+    api_key = api_key or os.environ.get(key_name) or config.get(key_name)
     if not api_key:
-        raise RuntimeError("Не задан FORTE_API_KEY. Сначала выполните setup.ps1.")
+        raise RuntimeError(f"Не задан {key_name}. Сначала настройте соответствующий ключ в .env.")
     data_dir = Path(data_dir or os.environ.get("FORTE_DATA_DIR") or ROOT / "runtime")
+    if public_mode:
+        data_dir = data_dir / "public"
     uploads = data_dir / "uploads"
     uploads.mkdir(parents=True, exist_ok=True)
     store = JobStore(data_dir / "jobs.sqlite3")
-    review = ReviewStore(Path(dataset_dir or os.environ.get("FORTE_DATASET_DIR") or ROOT.parent.parent / "work" / "dataset"),
-                        data_dir / "annotations.sqlite3")
+    review = None if public_mode else ReviewStore(
+        Path(dataset_dir or os.environ.get("FORTE_DATASET_DIR") or ROOT.parent.parent / "work" / "dataset"),
+        data_dir / "annotations.sqlite3")
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-preview")
 
     @asynccontextmanager
@@ -45,7 +52,10 @@ def create_app(api_key: str | None = None, data_dir: Path | None = None,
         yield
         executor.shutdown(wait=True)
 
-    app = FastAPI(title="Forte Vision — учебный проект", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="Clearity — учебный проект", version="0.3.0", lifespan=lifespan,
+                  docs_url=None if public_mode else "/docs",
+                  redoc_url=None if public_mode else "/redoc",
+                  openapi_url=None if public_mode else "/openapi.json")
     key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
     def require_key(key: Annotated[str | None, Depends(key_header)]):
@@ -70,7 +80,8 @@ def create_app(api_key: str | None = None, data_dir: Path | None = None,
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "stage": "video_preparation", "analysis_ready": False}
+        return {"status": "ok", "stage": "video_preparation", "analysis_ready": False,
+                "public_mode": public_mode}
 
     @app.post("/api/v1/preview", status_code=202, dependencies=[Depends(require_key)])
     async def preview(file: Annotated[UploadFile, File()]):
@@ -118,39 +129,53 @@ def create_app(api_key: str | None = None, data_dir: Path | None = None,
             "message": "Проверка нарушений появится на следующем этапе. Сейчас доступна подготовка видео.",
         })
 
-    @app.get("/api/v1/review/dataset", dependencies=[Depends(require_key)])
-    def review_dataset():
-        return review.dataset()
+    if not public_mode:
+        @app.get("/api/v1/review/dataset", dependencies=[Depends(require_key)])
+        def review_dataset():
+            return review.dataset()
 
-    @app.get("/api/v1/review/categories", dependencies=[Depends(require_key)])
-    def review_categories():
-        return review.categories()
+        @app.get("/api/v1/review/categories", dependencies=[Depends(require_key)])
+        def review_categories():
+            return review.categories()
 
-    @app.post("/api/v1/review/categories", status_code=201, dependencies=[Depends(require_key)])
-    def add_review_category(data: CategoryInput):
-        return review.add_category(data)
+        @app.post("/api/v1/review/categories", status_code=201, dependencies=[Depends(require_key)])
+        def add_review_category(data: CategoryInput):
+            return review.add_category(data)
 
-    @app.put("/api/v1/review/annotations/{video_id}", dependencies=[Depends(require_key)])
-    def save_review_annotation(video_id: str, data: AnnotationInput):
-        return review.save_annotation(video_id, data)
+        @app.put("/api/v1/review/annotations/{video_id}", dependencies=[Depends(require_key)])
+        def save_review_annotation(video_id: str, data: AnnotationInput):
+            return review.save_annotation(video_id, data)
 
-    @app.get("/api/v1/review/videos/{video_id}", dependencies=[Depends(require_key)])
-    def review_video(video_id: str):
-        return FileResponse(review.video_path(video_id), media_type="video/mp4")
+        @app.get("/api/v1/review/videos/{video_id}", dependencies=[Depends(require_key)])
+        def review_video(video_id: str):
+            return FileResponse(review.video_path(video_id), media_type="video/mp4")
 
-    @app.get("/api/v1/review/export", dependencies=[Depends(require_key)])
-    def export_review():
-        return {"format_version": 1, **review.dataset(), "categories": review.categories(),
-                "note": "Ручные наблюдения. Рабочие категории ещё не подтверждены нормативными источниками."}
+        @app.get("/api/v1/review/export", dependencies=[Depends(require_key)])
+        def export_review():
+            return {"format_version": 1, **review.dataset(), "categories": review.categories(),
+                    "note": "Ручные наблюдения. Рабочие категории ещё не подтверждены нормативными источниками."}
 
-    app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
+        @app.get("/review", include_in_schema=False)
+        def review_page():
+            return FileResponse(ROOT / "static" / "review.html")
+
+        app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
+    else:
+        @app.get("/static/{asset}", include_in_schema=False)
+        def public_asset(asset: str):
+            if asset not in {"app.js", "style.css"}:
+                raise HTTPException(404, "Файл недоступен.")
+            return FileResponse(ROOT / "static" / asset)
 
     @app.get("/", include_in_schema=False)
     def index():
+        if public_mode:
+            page = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+            page = page.replace('<a href="/review">Перейти к разбору разметки →</a>',
+                                '<span>Публичная загрузка видео</span>')
+            page = page.replace("Вставьте ключ из файла .env", "Введите ключ, полученный от владельца")
+            page = page.replace("Видео обрабатывается на этом компьютере.", "Видео обрабатывается на сервере владельца.")
+            return HTMLResponse(page)
         return FileResponse(ROOT / "static" / "index.html")
-
-    @app.get("/review", include_in_schema=False)
-    def review_page():
-        return FileResponse(ROOT / "static" / "review.html")
 
     return app
