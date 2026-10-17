@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clearity — разбор разметки</title>
+  <link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/review.css">
+  <script src="/static/review.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><a href="/" class="brand"><span class="brand-mark">C</span> Clearity</a><a class="back-link" href="/">Подготовка видео</a></header>
+  <main class="review-main">
+    <div class="eyebrow">УЧЕБНЫЙ ПРОЕКТ · ЭТАП 02</div>
+    <h1>Разберём действия по видео</h1>
+    <p class="intro">Сначала опишите, что видно. Затем объедините похожие действия в рабочие категории.</p>
+    <p class="notice">Метка организаторов сохранена отдельно. Выбор категории пока не подтверждает нарушение правила.</p>
+    <section class="panel" id="unlock-panel">
+      <form id="unlock-form" class="unlock-form">
+        <div><label for="review-key">Ключ доступа</label><input type="password" id="review-key" placeholder="Значение FORTE_API_KEY из .env" autocomplete="off" required></div>
+        <button type="submit">Открыть разметку →</button>
+      </form>
+    </section>
+    <p class="status" id="review-status" role="status" aria-live="polite">Введите ключ, чтобы открыть локальный каталог.</p>
+    <div id="review-workspace" hidden>
+      <div class="review-summary"><span id="dataset-summary"></span><span id="review-progress"></span><button type="button" id="export-button">Скачать наблюдения JSON</button></div>
+      <div class="review-grid">
+        <aside class="panel records-panel">
+          <label for="record-filter">Какие записи показать</label>
+          <select id="record-filter"><option value="all">Все записи</option><option value="violation">С меткой нарушения</option><option value="no_violation">Без нарушения</option><option value="unfinished">Ещё не разобраны</option></select>
+          <div id="record-list" class="record-list" aria-label="Список записей"></div>
+        </aside>
+        <section class="panel watching-panel">
+          <div class="section-number">01 / ПОСМОТРЕТЬ</div><h2 id="selected-title">Выберите запись</h2>
+          <p id="source-label" class="source-label"></p>
+          <p id="duplicate-note" class="duplicate-note" hidden></p>
+          <div class="video-box"><video id="review-video" controls playsinline preload="metadata" aria-label="Просмотр выбранного ролика"></video><p id="video-placeholder">Нажмите «Открыть видео».<br>Запись останется на этом компьютере.</p></div>
+          <button id="load-video" type="button">Открыть видео</button>
+          <div class="playback-tools">
+            <button id="jump-context" type="button" disabled>За 3 секунды до отметки</button>
+            <button id="jump-mark" type="button" disabled>К отметке</button>
+            <button id="back-second" type="button" disabled>−1 сек</button><button id="forward-second" type="button" disabled>+1 сек</button>
+          </div>
+          <div class="playback-line"><label for="playback-speed">Скорость</label><select id="playback-speed"><option value="1">Обычная</option><option value="0.5">Медленно ×0,5</option><option value="0.25">Медленно ×0,25</option></select><span id="current-time">0.00 сек</span></div>
+          <p class="hint">Смотрите несколько секунд до и после отметки. Если действие непонятно, просмотрите ролик целиком. Время в плеере приблизительное.</p>
+        </section>
+        <section class="panel annotation-panel">
+          <div class="section-number">02 / ЗАПИСАТЬ НАБЛЮДЕНИЕ</div><h2>Что именно видно</h2>
+          <form id="annotation-form">
+            <label for="observation">Наблюдаемое действие</label>
+            <textarea id="observation" rows="4" maxlength="3000" placeholder="Кто что делает, с каким предметом и в какой последовательности? Пишите только то, что различимо."></textarea>
+            <label for="category">Рабочая категория</label><select id="category"><option value="">Пока не определена</option></select>
+            <p id="category-definition" class="hint">Заготовки категорий описывают действия. Их наличие в датасете и нормативное основание ещё надо проверить.</p>
+            <div class="annotation-row"><div><label for="visibility">Насколько хорошо видно</label><select id="visibility"><option value="clear">Действие различимо</option><option value="partial">Частично закрыто</option><option value="unclear">Не могу разобрать</option></select></div><div><label for="review-state">Статус просмотра</label><select id="review-state"><option value="draft">Черновик</option><option value="reviewed">Просмотрено</option><option value="needs_review">Нужно уточнить</option></select></div></div>
+            <div class="annotation-row"><div><label for="event-start">Начало действия, сек</label><input type="number" id="event-start" min="0" step="0.01"><button class="small-button" type="button" id="set-start" disabled>Взять время плеера</button></div><div><label for="event-end">Конец действия, сек</label><input type="number" id="event-end" min="0" step="0.01"><button class="small-button" type="button" id="set-end" disabled>Взять время плеера</button></div></div>
+            <p class="hint">Границы можно пока оставить пустыми. Они не заменяют исходную отметку организаторов.</p>
+            <label for="notes">Что нужно уточнить</label><textarea id="notes" rows="2" maxlength="3000" placeholder="Например, неразличим предмет или нужно проверить основание правила."></textarea>
+            <button type="submit" id="save-annotation">Сохранить наблюдение →</button>
+          </form>
+          <details class="new-category"><summary>Добавить свою рабочую категорию</summary><form id="category-form"><label for="new-category-name">Название действия</label><input id="new-category-name" type="text" maxlength="120" required placeholder="Короткое название наблюдаемого действия"><label for="new-category-definition">Как его отличить от других</label><textarea id="new-category-definition" rows="2" maxlength="2000" placeholder="Какие признаки должны быть видны?"></textarea><button type="submit">Добавить категорию</button></form></details>
+          <p class="hint">Нормативное основание всех рабочих категорий пока не проверено. Наблюдения сохраняются отдельно от исходного Excel.</p>
+        </section>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

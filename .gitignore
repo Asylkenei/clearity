@@ -1,0 +1,16 @@
+.venv/
+.env
+.env.*
+!.env.example
+runtime/
+data/
+models/
+__pycache__/
+.pytest_cache/
+*.mov
+*.MOV
+*.xlsx
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+forte-observations*.json
