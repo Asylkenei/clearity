@@ -1,9 +1,11 @@
-"""Учебный этап 1: сервер, загрузка MOV и подготовка кадров."""
+"""Local upload, visual model inspection and private dataset review."""
 
 import logging
 import os
 import secrets
+import time
 import uuid
+from threading import Lock
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from app.store import JobStore
 from app.video import prepare_video
 from app.review import AnnotationInput, CategoryInput, ReviewStore
+from app.inspection import LocalModelClient, ModelError, inspect_video
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -27,7 +30,8 @@ log = logging.getLogger(__name__)
 def create_app(api_key: str | None = None, data_dir: Path | None = None,
                max_upload_bytes: int = 100 * 1024 * 1024,
                dataset_dir: Path | None = None,
-               public_mode: bool | None = None) -> FastAPI:
+               public_mode: bool | None = None,
+               model_client: LocalModelClient | None = None) -> FastAPI:
     """Создаём приложение. Параметры позволяют проверять его в изоляции."""
     config = dotenv_values(ROOT / ".env")
     if public_mode is None:
@@ -45,14 +49,17 @@ def create_app(api_key: str | None = None, data_dir: Path | None = None,
     review = None if public_mode else ReviewStore(
         Path(dataset_dir or os.environ.get("FORTE_DATASET_DIR") or ROOT.parent.parent / "work" / "dataset"),
         data_dir / "annotations.sqlite3")
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-preview")
+    enabled = str(os.environ.get("FORTE_MODEL_ENABLED", config.get("FORTE_MODEL_ENABLED", "0"))).lower() in ("1", "true", "yes")
+    model_client = model_client or (LocalModelClient() if enabled else None)
+    inspection_lock = Lock()
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-worker")
 
     @asynccontextmanager
     async def lifespan(_app):
         yield
         executor.shutdown(wait=True)
 
-    app = FastAPI(title="Clearity — учебный проект", version="0.3.0", lifespan=lifespan,
+    app = FastAPI(title="Clearity — учебный проект", version="0.4.0", lifespan=lifespan,
                   docs_url=None if public_mode else "/docs",
                   redoc_url=None if public_mode else "/redoc",
                   openapi_url=None if public_mode else "/openapi.json")
@@ -78,14 +85,35 @@ def create_app(api_key: str | None = None, data_dir: Path | None = None,
             # После подготовки сохраняем только обзорные кадры в локальной БД.
             path.unlink(missing_ok=True)
 
+    def process_inspection(job: dict, path: Path, deadline: float):
+        def progress(completed, total):
+            job["progress"] = {"completed_windows": completed, "total_windows": total}
+            store.put(job)
+        try:
+            job["result"] = inspect_video(path, model_client, deadline=deadline, progress=progress)
+            job["status"] = "done"
+        except ModelError as exc:
+            job["status"] = "failed"
+            job["error"] = {"code": "LOCAL_MODEL_FAILED", "message": str(exc)}
+        except (ValueError, OSError) as exc:
+            job["status"] = "failed"
+            job["error"] = {"code": "VIDEO_UNREADABLE", "message": str(exc)}
+        except Exception:
+            log.exception("Inspection failed for job %s", job["job_id"])
+            job["status"] = "failed"
+            job["error"] = {"code": "PROCESSING_FAILED", "message": "Не удалось завершить анализ видео."}
+        finally:
+            store.put(job)
+            path.unlink(missing_ok=True)
+            inspection_lock.release()
+
     @app.get("/health")
     def health():
-        return {"status": "ok", "stage": "video_preparation", "analysis_ready": False,
+        return {"status": "ok", "stage": "local_visual_review", "analysis_ready": False,
+                "inspection_ready": model_client is not None and model_client.ready(),
                 "public_mode": public_mode}
 
-    @app.post("/api/v1/preview", status_code=202, dependencies=[Depends(require_key)])
-    async def preview(file: Annotated[UploadFile, File()]):
-        """Дополнительный учебный API. Он не выдаёт вердикт о нарушениях."""
+    async def enqueue(file: UploadFile, kind: str):
         if Path(file.filename or "").suffix.lower() != ".mov":
             await file.close()
             raise HTTPException(415, "Выберите видео в формате .mov.")
@@ -108,11 +136,35 @@ def create_app(api_key: str | None = None, data_dir: Path | None = None,
         finally:
             await file.close()
 
-        job = {"job_id": job_id, "kind": "preview", "status": "processing",
+        job = {"job_id": job_id, "kind": kind, "status": "processing",
                "filename": Path(file.filename or "video.mov").name, "size_bytes": size}
         store.put(job)
-        executor.submit(process_preview, dict(job), path)
-        return {"job_id": job_id, "status": "processing", "kind": "preview"}
+        if kind == "inspection":
+            executor.submit(process_inspection, dict(job), path, time.monotonic() + 240)
+        else:
+            executor.submit(process_preview, dict(job), path)
+        return {"job_id": job_id, "status": "processing", "kind": kind}
+
+    @app.post("/api/v1/preview", status_code=202, dependencies=[Depends(require_key)])
+    async def preview(file: Annotated[UploadFile, File()]):
+        """Чтение файла без запуска модели."""
+        return await enqueue(file, "preview")
+
+    @app.post("/api/v1/inspect", status_code=202, dependencies=[Depends(require_key)])
+    async def inspect(file: Annotated[UploadFile, File()]):
+        """Экспериментальный локальный просмотр: наблюдения, без нормативного вердикта."""
+        if model_client is None or not model_client.ready():
+            await file.close()
+            raise HTTPException(503, detail={"code": "LOCAL_MODEL_UNAVAILABLE",
+                                            "message": "Локальная модель выключена. Запустите start-model.ps1 и дождитесь загрузки."})
+        if not inspection_lock.acquire(blocking=False):
+            await file.close()
+            raise HTTPException(429, "Модель уже обрабатывает видео. Дождитесь результата и повторите загрузку.")
+        try:
+            return await enqueue(file, "inspection")
+        except Exception:
+            inspection_lock.release()
+            raise
 
     @app.get("/api/v1/jobs/{job_id}", dependencies=[Depends(require_key)])
     def get_job(job_id: str):
@@ -125,8 +177,8 @@ def create_app(api_key: str | None = None, data_dir: Path | None = None,
     def analyze():
         # Нельзя возвращать no_violation, если анализ ещё не реализован.
         raise HTTPException(503, detail={
-            "code": "MODEL_NOT_CONFIGURED",
-            "message": "Проверка нарушений появится на следующем этапе. Сейчас доступна подготовка видео.",
+            "code": "VIOLATION_DETECTOR_NOT_VALIDATED",
+            "message": "Нормативный детектор ещё не настроен и не проверен. Локальные наблюдения доступны через /api/v1/inspect.",
         })
 
     if not public_mode:

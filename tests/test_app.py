@@ -138,7 +138,7 @@ def test_analysis_endpoint_refuses_to_invent_a_result(client, movie):
         response = client.post("/api/v1/analyze", headers=HEADERS,
                                files={"file": ("sample.mov", video, "video/quicktime")})
     assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "MODEL_NOT_CONFIGURED"
+    assert response.json()["detail"]["code"] == "VIOLATION_DETECTOR_NOT_VALIDATED"
 
 
 def test_completed_job_survives_app_restart(tmp_path, movie):

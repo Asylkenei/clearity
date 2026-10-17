@@ -4,29 +4,35 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Clearity — подготовка видео</title>
-  <link rel="stylesheet" href="/static/style.css">
-  <script src="/static/app.js" defer></script>
+  <title>Clearity — локальный просмотр видео</title>
+  <link rel="stylesheet" href="/static/style.css?v=0.4.0">
+  <script src="/static/app.js?v=0.4.0" defer></script>
 </head>
 
 <body>
   <header class="topbar"><a href="/" class="brand"><span class="brand-mark">C</span> Clearity</a><span
       class="local"><span></span> Локальная обработка</span></header>
   <main>
-    <div class="eyebrow">УЧЕБНЫЙ ПРОЕКТ · ЭТАП 01</div>
+    <div class="eyebrow">УЧЕБНЫЙ ПРОЕКТ · ЛОКАЛЬНАЯ МОДЕЛЬ</div>
     <h1>Проверяем загрузку кассового видео</h1>
-    <p class="intro">Загрузите запись кассы. Проверим, что видео читается, и покажем три обзорных кадра.</p>
-    <p class="notice"><strong>Проверка нарушений ещё не подключена.</strong> Кадры на этом этапе помогают проверить
-      чтение файла и время записи.</p>
+    <p class="intro">Модель рассматривает кадры записи и отмечает действия, которые стоит проверить человеку.</p>
+    <p class="notice"><strong>Экспериментальный поиск возможных проблем.</strong> Точность на банковских видео ещё не
+      измерена. Наблюдение модели не подтверждает нарушение; короткие действия между выбранными кадрами могут быть пропущены.</p>
     <div class="workspace">
       <section class="panel upload-panel" aria-labelledby="upload-title">
         <div class="section-number">01 / ЗАГРУЗКА</div>
-        <h2 id="upload-title">Подготовить запись</h2>
+        <h2 id="upload-title">Загрузить запись</h2>
         <form id="upload-form">
           <label for="api-key">Ключ доступа</label>
           <input id="api-key" name="key" type="password" required autocomplete="off"
             placeholder="Вставьте ключ из файла .env">
           <p class="hint">Ключ остаётся в этой вкладке и не сохраняется в браузере.</p>
+          <label for="mode">Что сделать с видео</label>
+          <select id="mode">
+            <option value="inspect">Поиск возможных проблем · локальная модель</option>
+            <option value="preview">Только три обзорных кадра · быстро</option>
+          </select>
+          <p id="model-status" class="hint" role="status">Проверяем подключение модели…</p>
           <label class="file-area" for="video-file">
             <span class="file-icon" aria-hidden="true">↥</span>
             <strong>Выберите видео</strong>
@@ -34,24 +40,28 @@
             <input id="video-file" name="file" type="file" accept=".mov,video/quicktime" required>
           </label>
           <p id="file-name" class="filename">Файл пока не выбран</p>
-          <button id="submit-button" type="submit">Подготовить видео <span aria-hidden="true">→</span></button>
+          <button id="submit-button" type="submit">Запустить просмотр <span aria-hidden="true">→</span></button>
         </form>
         <p class="privacy">Видео обрабатывается на этом компьютере. Облачные AI-сервисы не используются.</p>
       </section>
       <section class="panel result-panel" aria-labelledby="result-title">
         <div class="section-number">02 / РЕЗУЛЬТАТ</div>
-        <h2 id="result-title">Обзор записи</h2>
+        <h2 id="result-title">Результат просмотра</h2>
         <p id="status" class="status" role="status" aria-live="polite">Ожидаем видео</p>
         <div id="empty-state" class="empty-state">
           <div class="empty-symbol" aria-hidden="true">▤</div>
-          <p>Здесь появятся параметры<br>и кадры вашей записи</p>
+          <p>Здесь появятся наблюдения,<br>время и кадры записи</p>
         </div>
         <div id="result" hidden>
           <dl id="metadata" class="metadata"></dl>
+          <p id="result-note" class="notice" hidden></p>
+          <div id="observations"></div>
+          <div id="preview-result">
           <div class="frames-title">Обзорные кадры</div>
           <div id="frames" class="frames"></div>
           <p class="hint">Это обзорные кадры, а не доказательства нарушения. Длительность рассчитана приблизительно по
             данным декодера.</p>
+          </div>
         </div>
       </section>
     </div>
