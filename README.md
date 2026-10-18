@@ -9,10 +9,10 @@ Clearity accepts a cashier video, runs a local visual classifier, and returns a 
 ## Submission
 
 - Repository: https://github.com/Asylkenei/clearity
-- Hosted UI and API base URL: deployment verification pending; see `SUBMISSION.md` for the verified address when available.
+- Hosted UI and API base URL: https://clearity-3qoy.onrender.com
 - Jury API key: supplied privately; never committed to this repository.
 - Required endpoints: `POST /api/v1/analyze`, `GET /api/v1/jobs/{job_id}`.
-- Presentation: prepared separately; do not treat an absent presentation link as a deployed artifact.
+- Presentation: [English PDF](presentation/deliverables/Clearity_Pitch_English.pdf), [editable PPTX](presentation/deliverables/Clearity_Pitch_English.pptx), [speaker script and Q&A](presentation/deliverables/Clearity_Speaker_Script_and_QA.md).
 
 ## User flow
 
@@ -80,7 +80,7 @@ Poll the job until `status` is `done` or `failed`. A completed job exposes the r
 }
 ```
 
-`no_violation` returns an empty `violations` array. It means no positive model signal in sampled windows, not proof that all actions comply. Technical failures use `status: failed` and never produce a negative verdict. HTTP 415 rejects non-MOV uploads, 413 rejects oversized files, and 429 indicates an already running model job. The processing budget is 240 seconds; hosted end-to-end latency must be checked against the jury's 5-minute limit.
+`no_violation` returns an empty `violations` array. It means no positive model signal in sampled windows, not proof that all actions comply. Technical failures use `status: failed` and never produce a negative verdict. HTTP 415 rejects non-MOV uploads, 413 rejects oversized files, and 429 indicates an already running model job. The processing budget is 240 seconds; a warm hosted smoke test completed a synthetic 145-second, 29-MiB MOV in 63.59 seconds, including upload and polling. This checks technical processing, not detection accuracy or cold-start availability.
 
 ## Reproduce locally
 

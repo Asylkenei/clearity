@@ -1,0 +1,12 @@
+{
+  "base_url": "https://clearity-3qoy.onrender.com",
+  "elapsed_sec": 63.59,
+  "video_duration_sec": 145,
+  "upload_mb": 29,
+  "verdict": "no_violation",
+  "events": 0,
+  "schema_checked": true,
+  "unauthenticated_status": 401,
+  "private_review_status": 404,
+  "input_kind": "synthetic, warm service; not an accuracy evaluation"
+}

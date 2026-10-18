@@ -1,52 +1,17 @@
-# Публичная ссылка Clearity
+# Public hosting — Clearity
 
-Этот способ позволяет открыть загрузку видео с телефона или другого компьютера через интернет. Сервер обработки остаётся на вашем компьютере. Cloudflare передаёт HTTP-запросы и ответы; облачные AI не используются.
+The submission deployment uses a Render Python Web Service with a CPU-only ResNet18 temporal binary classifier. See the English [README](README.md) and [submission checklist](SUBMISSION.md) for the API, startup configuration, measured results and remaining gaps.
 
-Ссылка временная и работает, пока компьютер включён, публичный сервер и туннель запущены. Для просмотра моделью нужен ещё один процесс — локальная модель. При перезапуске туннеля адрес меняется. Для постоянного адреса и работы без вашего компьютера понадобится отдельный сервер.
+## Hosted service
 
-## Как запустить
+The deployment runs independently of the developer's laptop. Qwen is disabled on the free Render instance because of its memory requirements. All video inference takes place inside the deployed service; no external AI API receives frames.
 
-Откройте папку проекта в VS Code. Нажмите **Терминал → Создать терминал**, выберите PowerShell.
+Use the verified HTTPS base URL listed in SUBMISSION.md. Enter the privately supplied jury key in the web interface, or send it as X-API-Key. Never put the key in a URL or commit it to GitHub.
 
-Для просмотра моделью сначала запустите `start-model.ps1` в отдельном терминале и дождитесь загрузки. Установка модели, настройка `FORTE_MODEL_ENABLED=1` и подробные шаги описаны в [LOCAL_MODEL.md](LOCAL_MODEL.md). Без модели остаётся доступен режим трёх обзорных кадров.
+Free Render instances sleep after inactivity, so a cold request can take 50 seconds or more to wake the server. Jobs and evidence are stored on ephemeral disk and can be lost on redeploy. A technical failure is returned as failed rather than a negative verdict.
 
-В первом терминале:
+The public application hides the local dataset and annotation routes. Training videos, original labels and the local annotation database are not part of the deployment.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\start-public.ps1
-```
+## Optional laptop tunnel
 
-Скрипт создаёт отдельный случайный ключ в `.env`, если его ещё нет, и запускает приложение на порту 8001. Дождитесь сообщения `Uvicorn running on http://127.0.0.1:8001`.
-
-Откройте второй терминал через **Терминал → Создать терминал**. В нём:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\start-tunnel.ps1
-```
-
-При первом запуске скрипт скачает официальный клиент Cloudflare в `.tools` и проверит SHA256. Затем появится адрес вида `https://...trycloudflare.com`. Скопируйте именно адрес из своего терминала.
-
-Откройте этот адрес на другом устройстве. Для загрузки видео понадобится значение `FORTE_PUBLIC_API_KEY` из локального `.env`. Передавайте его только тем, кому разрешаете пользоваться сервисом. Ключ не надо добавлять в адрес ссылки.
-
-Оставьте оба терминала открытыми. Нажатие Ctrl+C во втором терминале отключает внешний адрес. Нажатие Ctrl+C в первом останавливает обработку.
-
-## Что доступно по ссылке
-
-- Главная страница и загрузка новых MOV по отдельному ключу.
-- Подготовка трёх обзорных кадров и чтение параметров видео.
-- Экспериментальный просмотр местной Qwen через `/api/v1/inspect`: наблюдения, возможные проблемы, время и кадры для ручной проверки.
-- Получение статуса новых заданий.
-
-Нормативный детектор ещё не проверен: `/api/v1/analyze` возвращает `503 VIOLATION_DETECTOR_NOT_VALIDATED`. Результаты модели не являются подтверждёнными нарушениями. В первом режиме рассматриваются три кадра из каждой 20-секундной части; быстрые действия могут быть пропущены.
-
-## Что остаётся локальным
-
-Публичный экземпляр не читает исходный manifest.json и не открывает SQLite с ручной разметкой. Маршруты `/review`, `/api/v1/review/...` и файлы страницы разметки отсутствуют в публичном приложении. Ранее созданные локальные задания также недоступны: новые результаты хранятся отдельно в `runtime/public`.
-
-Локальный разбор данных по-прежнему запускается через `start.ps1` на порту 8000 с ключом `FORTE_API_KEY`. Не используйте этот локальный порт для туннеля. Скрипт start-tunnel.ps1 проверяет режим сервера и отказывается публиковать локальную страницу разметки.
-
-## Проверка
-
-На другом устройстве откройте адрес через мобильный интернет или другую сеть. Проверьте главную страницу, загрузку короткого учебного MOV и получение кадров. По адресу `/review` должен возвращаться ответ 404.
-
-Официальное описание временных туннелей и их ограничений: https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/
+The older start-public.ps1 and start-tunnel.ps1 workflow remains available for local demonstrations. A tunnel stops when the laptop or its server stops; it is not the independent hosted submission. The optional start-model.ps1 process enables local Qwen observations through /api/v1/inspect.

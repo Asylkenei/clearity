@@ -152,7 +152,7 @@ form.addEventListener('submit', async (event) => {
   try {
     const body = new FormData(); body.append('file', file);
     const submitted = await request(analysis ? '/api/v1/analyze' : inspection ? '/api/v1/inspect' : '/api/v1/preview', { method: 'POST', body }, key);
-    setStatus(inspection ? 'Видео получено. Локальная модель рассматривает кадры. Это может занять несколько минут…'
+    setStatus(analysis ? 'Видео получено. Анализируем визуальные признаки. Это может занять несколько минут…' : inspection ? 'Видео получено. Локальная модель рассматривает кадры. Это может занять несколько минут…'
       : 'Видео получено. Читаем параметры и обзорные кадры…');
     const deadline = Date.now() + 5 * 60 * 1000;
     while (Date.now() < deadline) {
