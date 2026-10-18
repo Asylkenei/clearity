@@ -1,430 +1,170 @@
 # Clearity
 
-Учебный проект для кейса ForteBank. На первом этапе мы делаем работающую загрузку MOV, локальное чтение видео, обзорные кадры и API со статусами заданий. Распознавание нарушений и нормативные правила будут подключены следующими этапами.
+**Offline cashier-video review prototype for ForteBank Datathon 26.**
 
-Текущая версия не готова к проверке жюри: `/api/v1/analyze` специально отвечает `503 MODEL_NOT_CONFIGURED`. Подготовка записи не означает, что нарушения отсутствуют.
+Clearity accepts a cashier video, runs a local visual classifier, and returns a binary prediction with timestamped JPEG evidence for human review. The web interface is in Russian; this submission documentation is in English.
 
-## Запуск после скачивания из GitHub
+> **Readiness disclosure:** this is an experimental binary baseline. Its saved held-out accuracy is **50% on 8 videos**. Semantic violation subtypes and event-to-clause legal classification are not validated. Do not interpret a prediction as a legal or disciplinary finding.
 
-Репозиторий содержит код и инструкции. Видео, исходная разметка, ключи и сохранённые наблюдения остаются локально.
+## Submission
 
-В PowerShell:
+- Repository: https://github.com/Asylkenei/clearity
+- Hosted UI and API base URL: deployment verification pending; see `SUBMISSION.md` for the verified address when available.
+- Jury API key: supplied privately; never committed to this repository.
+- Required endpoints: `POST /api/v1/analyze`, `GET /api/v1/jobs/{job_id}`.
+- Presentation: prepared separately; do not treat an absent presentation link as a deployed artifact.
 
-```powershell
-git clone https://github.com/Asylkenei/clearity.git
-Set-Location clearity
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
+## User flow
+
+1. Open the web interface and enter the supplied jury key.
+2. Choose **Анализ кассовой дисциплины · ResNet** and upload a `.mov` video.
+3. Follow the processing status.
+4. Review either **Нарушение не обнаружено** or **Обнаружены признаки возможных нарушений**.
+5. For a positive prediction, inspect event timestamps, 1–3 JPEG frames, the model explanation, and the regulatory context link.
+
+The service accepts MOV files up to 100 MiB and videos up to 180 seconds. The challenge examples are approximately 29 MB and up to 145 seconds. Uploads are streamed to disk; a single analysis worker avoids concurrent model memory spikes. Server-side uploaded video copies are deleted after processing. Results and evidence remain in the service's SQLite database until its ephemeral storage is reset.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  A[Browser or jury API] --> B[FastAPI + X-API-Key]
+  B --> C[Single background worker]
+  C --> D[OpenCV: sample every 2 seconds]
+  D --> E[Frozen ResNet18: center and full views]
+  E --> F[Temporal features + logistic regression]
+  F --> G[Group positive windows and select peak]
+  G --> H[Timestamped JPEG evidence + JSON]
+  H --> I[Human review]
 ```
 
-Нужны Git и Python 3.12. Скрипт установки также умеет использовать Python, поставляемый с Codex. Откройте http://127.0.0.1:8000/ и скопируйте локальный ключ из `.env` в поле доступа.
+**Hosted mode:** CPU-only ResNet18 encoder, a numeric logistic-regression artifact, OpenCV, FastAPI and SQLite. Inference uses only the uploaded video and installed weights; no dataset lookup or label lookup occurs at inference time. Scores are classifier outputs, not calibrated probabilities of a legal violation.
 
-Для работы с собственным датасетом задайте его папку в текущем PowerShell, создайте каталог и запустите сервер из того же терминала:
+**Optional local mode:** Qwen3-VL-2B-Instruct Q4_K_M through llama.cpp, bound to `127.0.0.1:8081`. `/api/v1/inspect` produces experimental Russian observations from 3 frames per 20-second window. This separate mode requires approximately 1.55 GB of weight files plus runtime memory and is disabled on free Render. See [LOCAL_MODEL.md](LOCAL_MODEL.md).
 
-```powershell
-$env:FORTE_DATASET_DIR = 'C:\Datasets\fortebank'
-& '.\.venv\Scripts\python.exe' -m app.dataset $env:FORTE_DATASET_DIR
-powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
+All model inference runs inside the team's deployed environment. No cloud LLM, vision inference service, or face-identification API is called. Public encoder weights are downloaded and SHA256-verified during setup/build; video processing needs no Internet access after installation. Ordinary hosting and HTTPS transport are infrastructure, not third-party AI inference.
+
+## Jury API
+
+All `/api/v1/*` requests require `X-API-Key`. Missing or incorrect keys return HTTP 401.
+
+```bash
+export CLEARITY_BASE_URL="https://YOUR-VERIFIED-SERVICE.onrender.com"
+export CLEARITY_API_KEY="YOUR-PRIVATE-JURY-KEY"
+curl -X POST "$CLEARITY_BASE_URL/api/v1/analyze" \
+  -H "X-API-Key: $CLEARITY_API_KEY" -F "file=@video.mov"
+# HTTP 202: {"job_id":"...","status":"processing","kind":"analysis"}
+curl "$CLEARITY_BASE_URL/api/v1/jobs/JOB_ID" \
+  -H "X-API-Key: $CLEARITY_API_KEY"
 ```
 
-В этой папке должны быть MOV и `open_labels.xlsx`. Если сервер уже работает, сначала остановите его. Путь выше — пример для другого компьютера. Ниже сохранена пошаговая инструкция для исходного локального рабочего пространства.
-
-## Что уже подготовлено на этом компьютере
-
-- VS Code и Git были установлены ранее.
-- Для проекта создано отдельное окружение Python 3.12 в `.venv`.
-- Установлены сервер FastAPI, Uvicorn, OpenCV и библиотеки для проверок.
-- Создан локальный ключ доступа в `.env`.
-- Подготовлен локальный Git-репозиторий для хранения версий исходного кода.
-- Копии 42 исходных видео и разметки сохранены за пределами репозитория, в папке `work/dataset` текущего рабочего пространства. Оригиналы сохранены.
-
-Большие нейросети пока не устанавливались. На компьютере обнаружена встроенная AMD Radeon; пригодность конкретной модели и скорость её работы надо проверить отдельно.
-
-## Урок 1 Открыть проект и увидеть результат
-
-### Шаг 1 Откройте папку
-
-1. Запустите Visual Studio Code.
-2. Нажмите **File → Open Folder** или **Файл → Открыть папку**.
-3. Вставьте путь:
-
-```text
-C:\Users\Асылкеней\Documents\Codex\2026-10-17\files-mentioned-by-the-user-fortebank\outputs\forte-vision
-```
-
-4. Нажмите **Выбор папки**.
-5. Слева появятся файлы проекта. Если VS Code спросит, доверяете ли вы этой папке, подтвердите доверие к созданному для вас локальному проекту.
-
-Папка проекта — это место, где лежит наш код. Папка `.venv` содержит Python и установленные библиотеки: вручную редактировать её не нужно.
-
-### Шаг 2 Откройте терминал
-
-Нажмите **Terminal → New Terminal** или **Терминал → Создать терминал**. Внизу откроется панель для команд.
-
-Выберите PowerShell в меню терминала. Команды ниже написаны для него. Запускайте команды по одной, нажимая Enter. Строки с путями заключены в кавычки, чтобы пробелы и кириллица не мешали.
-
-Проверьте, что вы в папке проекта:
-
-```powershell
-Get-Location
-```
-
-Путь должен заканчиваться на `outputs\forte-vision`. Если это другая папка:
-
-```powershell
-Set-Location -LiteralPath 'C:\Users\Асылкеней\Documents\Codex\2026-10-17\files-mentioned-by-the-user-fortebank\outputs\forte-vision'
-```
-
-### Шаг 3 Проверьте Python
-
-```powershell
-& '.\.venv\Scripts\python.exe' --version
-```
-
-Вы должны увидеть Python 3.12. Знак `&` говорит PowerShell запустить программу по пути в кавычках.
-
-На этом компьютере команда `python` в общей системе указывает на ярлык Windows. Поэтому мы явно запускаем Python из `.venv`, а не полагаемся на этот ярлык.
-
-Установка уже выполнена. При переносе проекта или необходимости восстановить библиотеки запустите:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
-```
-
-Скрипт создаёт отдельное окружение, устанавливает версии из `requirements.txt` и создаёт `.env`, если его ещё нет. `-ExecutionPolicy Bypass` действует для этого запуска PowerShell и не меняет постоянную политику системы.
-
-Если на другом компьютере нет Python, сначала установите Python 3.12 с https://www.python.org/downloads/ и передайте путь:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -PythonPath 'C:\путь\к\python.exe'
-```
-
-### Шаг 4 Запустите сервер
-
-Если сервер уже запущен помощником, просто откройте http://127.0.0.1:8000/ и переходите к шагу 5.
-
-Чтобы запустить его самостоятельно:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
-```
-
-Дождитесь строки `Uvicorn running on http://127.0.0.1:8000`.
-
-Сервер — программа, которая ждёт загрузки и обрабатывает запросы. Пока она работает, терминал занят: это нормально. Не закрывайте его. Для остановки нажмите **Ctrl+C**.
-
-`127.0.0.1` означает этот компьютер. Сейчас сайт доступен только локально. Публичный адрес для жюри будем настраивать отдельным этапом.
-
-Если порт 8000 занят, используйте другой:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -Port 8001
-```
-
-В таком случае откройте http://127.0.0.1:8001/.
-
-### Шаг 5 Подготовьте настоящее видео
-
-1. В VS Code откройте файл `.env` слева.
-2. Найдите строку `FORTE_API_KEY=...`.
-3. Скопируйте только значение после знака `=` без пробелов и перевода строки.
-4. На сайте вставьте его в поле **Ключ доступа**.
-5. Нажмите **Выберите видео**.
-6. В окне выбора файла перейдите в:
-
-```text
-C:\Users\Асылкеней\Documents\Codex\2026-10-17\files-mentioned-by-the-user-fortebank\work\dataset
-```
-
-7. Выберите `X-1.mov` или любой другой ролик.
-8. Нажмите **Подготовить видео**.
-9. Дождитесь появления параметров и трёх кадров.
-
-Ключ защищает API от запросов без разрешения. Сайт хранит введённое значение только в открытой вкладке. Файл `.env` не добавляется в Git.
-
-Обзорные кадры выбраны примерно на 10%, 50% и 90% длительности. Они не выбираются по разметке и не являются доказательствами нарушения. У каждого показано время, полученное от декодера. Длительность пока оценивается как количество кадров / FPS; точность временных меток для переменного FPS проверим отдельно.
-
-После подготовки загруженная серверная копия MOV удаляется, а результат с JPEG остаётся в локальной SQLite. Исходный файл, который вы выбрали, остаётся на месте.
-
-## Урок 2 Разобраться в коде
-
-### Какие файлы за что отвечают
-
-```text
-forte-vision/
-├── app/
-│   ├── main.py          сервер и API
-│   ├── video.py         чтение видео и JPEG-кадры
-│   ├── store.py         хранение заданий в SQLite
-│   └── dataset.py       отдельная проверка разметки и каталога
-├── static/
-│   ├── index.html       содержание страницы
-│   ├── style.css        оформление
-│   └── app.js           загрузка и получение результата в браузере
-├── tests/               автоматические проверки
-├── requirements.txt     точные версии библиотек
-├── setup.ps1            установка
-├── start.ps1            запуск
-├── .env                 ваш локальный ключ
-└── runtime/             создаётся при работе; база и временные загрузки
-```
-
-### Первая понятная функция
-
-Откройте `app/main.py` и найдите:
-
-```python
-@app.get("/health")
-def health():
-    return {"status": "ok", "stage": "video_preparation", "analysis_ready": False}
-```
-
-- `@app.get("/health")` связывает адрес `/health` с функцией ниже.
-- `def health():` объявляет функцию — именованный блок кода.
-- `return` возвращает результат.
-- Словарь `{...}` превращается в JSON-ответ.
-- `False` означает, что распознавание нарушений пока недоступно.
-
-Откройте http://127.0.0.1:8000/health в браузере. Вы увидите данные, которые вернула эта функция.
-
-### Как файл попадает на сервер
-
-В `static/app.js` найдите:
-
-```javascript
-const body = new FormData(); body.append('file', file);
-const submitted = await request('/api/v1/preview', { method: 'POST', body }, key);
-```
-
-Браузер упаковывает выбранный файл в форму и отправляет на наш сервер. Имя поля `file` совпадает с именем поля загрузки в API.
-
-В `app/main.py` запрос обрабатывает функция `preview`. Она проверяет расширение, записывает файл порциями, создаёт уникальное задание и запускает подготовку. Оригинальное имя файла не используется как путь сохранения.
-
-### Зачем нужен job_id
-
-Чтение видео занимает время. Сервер сразу возвращает номер задания, например:
+Poll the job until `status` is `done` or `failed`. A completed job exposes the required fields **at the top level**, alongside optional metadata:
 
 ```json
-{"job_id": "пример-идентификатора", "status": "processing", "kind": "preview"}
+{
+  "job_id": "example-id",
+  "status": "done",
+  "verdict": "violation",
+  "violations": [{
+    "type": "Визуальный признак возможного нарушения кассовой дисциплины",
+    "timecode_sec": 44.2,
+    "description": "A visual pattern similar to concerning training examples; inspect the evidence manually.",
+    "evidence_frames": [{"timestamp_sec": 44.2, "image_base64": "<JPEG base64>"}],
+    "normative_source": {
+      "document": "National Bank Resolution No. 231, 29 November 2019",
+      "section": "Chapter 2: cash operations",
+      "url": "https://adilet.zan.kz/rus/docs/V1900019680",
+      "relationship": "context_only"
+    }
+  }]
+}
 ```
 
-Браузер периодически спрашивает `/api/v1/jobs/{job_id}`. Статус `done` означает, что закончена именно подготовка видео. Статус `failed` означает техническую ошибку.
+`no_violation` returns an empty `violations` array. It means no positive model signal in sampled windows, not proof that all actions comply. Technical failures use `status: failed` and never produce a negative verdict. HTTP 415 rejects non-MOV uploads, 413 rejects oversized files, and 429 indicates an already running model job. The processing budget is 240 seconds; hosted end-to-end latency must be checked against the jury's 5-minute limit.
 
-Работа с моделью в будущем будет другим видом задания. Учебный `/preview` не заменяет обязательный `/analyze` из кейса.
+## Reproduce locally
 
-### Как получаются кадры
+Python 3.12 is recommended. From the repository root:
 
-В `app/video.py` найдите:
-
-```python
-capture = cv2.VideoCapture(str(path))
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# Linux/macOS: source .venv/bin/activate
+python -m pip install -r requirements-deploy.txt
+python deployment/setup_encoder.py
 ```
 
-OpenCV открывает локальный файл. Затем программа перемещается к выбранному моменту и читает кадр:
-
-```python
-capture.set(cv2.CAP_PROP_POS_FRAMES, index)
-ok, frame = capture.read()
-```
-
-`ok` показывает, удалось ли прочитать изображение. `frame` содержит пиксели. Они кодируются в JPEG, затем в base64, чтобы передать изображения внутри JSON.
-
-Base64 — способ записать двоичные данные текстом. Он не шифрует изображение.
-
-### Первое небольшое изменение своими руками
-
-1. Откройте `static/index.html`.
-2. Найдите `<h1>Начнём с вашего видео</h1>`.
-3. Замените текст, например на `<h1>Проверяем загрузку кассового видео</h1>`.
-4. Нажмите **Ctrl+S**.
-5. Обновите страницу браузера.
-
-Это упражнение меняет только заголовок. HTML и CSS достаточно сохранить и обновить страницу. После изменений Python-кода в текущем режиме остановите свой сервер через Ctrl+C и запустите его снова.
-
-## Урок 3 Проверить, что ничего не сломалось
-
-Откройте второй терминал VS Code: **Terminal → New Terminal**. В папке проекта выполните:
-
-```powershell
-& '.\.venv\Scripts\python.exe' -m pytest -q
-```
-
-Тесты используют отдельные временные папки и самостоятельно создают короткие учебные видео. Банковские ролики для них не нужны.
-
-Проверяются корректный ключ, пустые и большие файлы, повреждённое видео, получение JPEG, сохранение задания после перезапуска, разбор таймкодов и одинаковые файлы с разной разметкой.
-
-В версии с разбором разметки должно проходить 49 тестов. После следующих изменений их число может увеличиться. Важны отсутствие ошибок и проверка нужного поведения.
-
-Для проверки окружения:
-
-```powershell
-& '.\.venv\Scripts\python.exe' -m pip check
-```
-
-## Разметка и каталог данных
-
-Исходная таблица имеет три столбца: имя, таймкод, нарушение / без нарушения. Категорий событий в ней нет. Пустой таймкод для корректного ролика не превращается в ноль.
-
-Для повторного построения локального каталога:
-
-```powershell
-& '.\.venv\Scripts\python.exe' -m app.dataset '..\..\work\dataset'
-```
-
-Результат появится в `work/dataset/manifest.json` рядом с данными. Это технический каталог, а не результат распознавания. Модуль каталога не используется API при загрузке нового видео.
-
-Обнаружены 42 записи: 22 с меткой нарушения и 20 без. Первый кадр читается у всех. Побайтно одинаковы `Х-4.mov` и `Х-47.mov`, а также `Х-5.mov` и `Х-48.mov`. У первой пары разные отметки: 57 и 68 секунд. Они сохранены без исправлений; нужно проверить, относятся ли они к разным событиям.
-
-Разделение на разработку и проверку ещё не выполнено. Одинаковые файлы должны попасть в одну группу, а похожие постановочные дубли нужно проверить вручную.
-
-## API текущего этапа
-
-| Запрос | Что делает |
-|---|---|
-| `GET /health` | Проверяет работу сервера, не требует ключа |
-| `POST /api/v1/preview` | Принимает MOV в поле `file`, возвращает job_id |
-| `GET /api/v1/jobs/{job_id}` | Возвращает статус и подготовленные кадры |
-| `POST /api/v1/analyze` | Пока возвращает 503 MODEL_NOT_CONFIGURED |
-
-Все запросы `/api/v1/...` требуют заголовок `X-API-Key`.
-
-Пример запроса из PowerShell без вывода ключа на экран:
-
-```powershell
-$forteKey = ((Get-Content -LiteralPath '.env' | Where-Object { $_ -like 'FORTE_API_KEY=*' }) -replace '^FORTE_API_KEY=', '').Trim()
-curl.exe -X POST 'http://127.0.0.1:8000/api/v1/preview' -H "X-API-Key: $forteKey" -F 'file=@../../work/dataset/X-1.mov'
-```
-
-Замените `JOB_ID` идентификатором из ответа:
-
-```powershell
-curl.exe 'http://127.0.0.1:8000/api/v1/jobs/JOB_ID' -H "X-API-Key: $forteKey"
-```
-
-Полный JSON содержит JPEG в base64 и может быть длинным. Для знакомства с результатом удобнее сайт. Автоматическая документация FastAPI находится в `/docs`; её интерфейс по умолчанию использует внешние статические ресурсы. Основная страница и подготовка видео работают локально без них.
-
-## Урок 4 Разобрать разметку и создать категории
-
-Ничего дополнительно устанавливать не нужно. Откройте http://127.0.0.1:8000/review или нажмите «Перейти к разбору разметки» внизу основной страницы. Если страница отвечает 404, остановите старый сервер и заново запустите start.ps1: Python-код обновился.
-
-### Что означает исходная разметка
-
-- `violation` — организаторы отметили нарушение, но его тип не назван.
-- `no_violation` — по исходной разметке нарушения нет. Такую запись также надо посмотреть, чтобы понять обычную последовательность действий.
-- `label_timecode_sec` — отметка организаторов в секундах от начала.
-- Пустое время у корректной записи не означает нулевую секунду.
-
-В предоставленной разметке 22 записи с нарушением и 20 без. Категорий в Excel нет. Автоматически заполнять их по имени файла нельзя.
-
-### Открыть первый ролик
-
-1. Откройте `.env` в VS Code и скопируйте значение после `FORTE_API_KEY=`.
-2. На странице разбора вставьте ключ и нажмите **Открыть разметку**.
-3. В списке слева выберите **X-1.mov**. Его исходная отметка — **22 секунды**.
-4. Нажмите **Открыть видео**. Ролик читается с локального диска; ни видео, ни наблюдения не передаются внешним AI.
-5. Нажмите **За 3 секунды до отметки**, затем ▶ в самом плеере.
-6. Посмотрите участок примерно 19–25 секунд. При необходимости выберите **Медленно ×0,5**.
-7. Если смысл непонятен, посмотрите весь ролик: отметка сама по себе не объясняет действие.
-
-Если браузер не воспроизводит MOV, откройте этот же исходный файл двойным щелчком в папке `work/dataset`, просмотрите в установленном локальном проигрывателе и заполните форму на странице. Установка другого проигрывателя не требуется, если текущий уже открывает файл.
-
-### Записать наблюдение
-
-В поле **Наблюдаемое действие** запишите:
+Set these environment variables (PowerShell uses `$env:NAME = 'value'`):
 
 ```text
-Кто → что делает → с каким предметом → откуда и куда → в какой последовательности.
+FORTE_PUBLIC_MODE=1
+FORTE_ANALYSIS_ENABLED=1
+FORTE_MODEL_ENABLED=0
+FORTE_PUBLIC_API_KEY=<a long random secret>
 ```
 
-Условный пример формулировки, не описание X-1:
+```bash
+python -m uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000 --workers 1
+```
+
+Open `http://127.0.0.1:8000`. `GET /health` is unauthenticated and reports `analysis_ready` and `public_mode`. Use one worker with the SQLite job store. `deployment/candidate.npz` contains only numeric model parameters; the ResNet encoder is fetched from a pinned ONNX Models revision with a verified digest.
+
+## Deploy on Render
+
+The repository includes [render.yaml](render.yaml), with a free Python Web Service, build command, single-worker startup command, health check and generated private key. A manual service must use the same settings:
 
 ```text
-Человек за столом берёт предмет справа и передаёт его человеку напротив.
+Build: pip install -r requirements-deploy.txt && python deployment/setup_encoder.py
+Start: python -m uvicorn app.main:create_app --factory --host 0.0.0.0 --port $PORT --workers 1
+Python: 3.12.10
+FORTE_PUBLIC_MODE=1
+FORTE_ANALYSIS_ENABLED=1
+FORTE_MODEL_ENABLED=0
+FORTE_DATA_DIR=/tmp/clearity
+FORTE_PUBLIC_API_KEY=<private random secret>
 ```
 
-Если не уверены, что это банкноты, пишите «предмет», а не «деньги». Если на записи не видно намерения человека, не пишите «хочет украсть» или «специально скрывает».
+The laptop can be off after successful deployment. Free Render services can sleep after inactivity and have ephemeral storage: cold starts affect availability and redeploys can discard jobs. This is a demonstration deployment, not a production availability guarantee. Qwen is not loaded on this tier.
 
-Метка «нарушение» дана организаторами. Ваше наблюдение должно описать, что видно, а нормативное объяснение будем проверять отдельно.
+## Dataset and measured baseline
 
-### Выбрать или создать категорию
+The local challenge catalog contains 42 labeled records and 40 unique video hashes. Exact duplicates are grouped before splitting. The saved experiment uses 24 unique training videos, 8 validation videos and 8 held-out test videos. Only a scaler and logistic-regression classifier are trained; ResNet is frozen and Qwen is not fine-tuned.
 
-В форме есть пять заготовок групп наблюдений:
+| Held-out metric | Result |
+| --- | ---: |
+| Accuracy | 50% |
+| Precision | 50% |
+| Recall | 50% |
+| F1 | 0.50 |
+| Test videos | 8 |
 
-| Рабочая группа | Что записывать |
-|---|---|
-| Передача и перемещение наличных | Кто кому передаёт ценности; откуда и куда их перемещает |
-| Пересчёт и проверка наличных | Какая последовательность проверки различима |
-| Хранение и наблюдение за ценностями | Где лежат ценности и кто остаётся рядом |
-| Доступ к рабочей зоне | Кто приближается, входит или получает доступ к предметам |
-| Действия при инкассации | Какие действия с упаковками и ценностями видны при участии инкассаторов |
+This small experiment is not evidence of robust detection. Session/person/camera independence is not guaranteed by exact-hash grouping. No final jury videos have been used for training. Training code and protocols are documented in [TRAINING.md](TRAINING.md) and [REVIEWED_TRAINING.md](REVIEWED_TRAINING.md). Private per-video predictions and split membership are not published.
 
-Это заготовки, а не подтверждённые категории вашего датасета. Не выбирайте их по догадке. Они помогут сначала сгруппировать наблюдения. При поиске нормативов мы уточним признаки, условия и названия возможных нарушений.
+## Regulatory grounding and recognized event scope
 
-Если нужной группы нет:
+Public Kazakhstan source: [National Bank Resolution No. 231 of 29 November 2019 — Rules for cash operations and collection](https://adilet.zan.kz/rus/docs/V1900019680), Chapter 2 for cash operations. This is **general regulatory context**, not a claim that an automatically found frame violates a specific clause. The binary detector recognizes one generic learned concerning-pattern class; it cannot reliably name theft, unauthorized entry, unattended valuables or collection-procedure violations.
 
-1. Раскройте **Добавить свою рабочую категорию**.
-2. Запишите короткое название действия.
-3. В поле **Как его отличить от других** перечислите наблюдаемые признаки.
-4. Нажмите **Добавить категорию**.
-5. Затем сохраните наблюдение — добавление категории само по себе не связывает её с роликом.
+The optional Qwen mode uses provisional observation categories (`cash_handling`, `valuables_storage`, `workspace_access`, `collection`, `other`, `unclear`). These are prompts for human review, not validated legal violation classes. In particular, counting or passing cash alone must not be treated as an established violation.
 
-Категория получает статус «Нормативное основание не проверено». Наличие слова «категория» не превращает действие в доказанное нарушение.
+## Known limitations and remaining gaps
 
-### Сохранить результат
+- Binary quality is weak: 50% accuracy on a small held-out test.
+- Precise semantic event classification and a verified event-to-rule mapping remain unfinished.
+- The generated explanation describes model similarity rather than independently verified visible actions.
+- Two-second sampling may miss brief actions; grouped windows can merge separate nearby events.
+- Camera-angle robustness, variable-frame-rate timing accuracy and complete event recall are not validated.
+- A positive result is an aid to human review, not an accusation or legal finding.
+- Free hosting cold starts and CPU limits require real deployment timing checks.
+- The public app hides local dataset-review routes; the local annotation interface is not exposed.
 
-1. Выберите, насколько хорошо видно действие.
-2. Если всё понятно, выберите статус **Просмотрено**.
-3. Если не разобрались, оставьте категорию пустой и выберите **Нужно уточнить**. Напишите причину в последнем поле.
-4. Начало и конец события можно пока оставить пустыми. Если хотите отметить границы, остановите плеер в нужный момент и нажмите **Взять время плеера** у соответствующего поля.
-5. Нажмите **Сохранить наблюдение** и дождитесь сообщения об успешном сохранении.
+## Verification and data handling
 
-Для записи с меткой нарушения завершённый просмотр требует наблюдения и категории. Черновик и «Нужно уточнить» можно сохранить без категории. Для корректной записи категория необязательна.
+```bash
+python -m pip install pytest
+python -m pytest -q
+python -m pip check
+```
 
-Наблюдения хранятся в `runtime/annotations.sqlite3`. Это локальная база данных. Excel и исходный manifest.json остаются неизменными. Не удаляйте runtime, если хотите сохранить проделанную разметку.
+Tests cover authentication, upload handling, real MOV decoding/JPEG evidence, job persistence, public/private route isolation, local-model errors, training and the jury response contract. Challenge videos, spreadsheets, `.env`, SQLite files, runtime outputs and Qwen weights are excluded from Git. Only the small numeric trained classifier artifact is included for reproducible hosted inference.
 
-### Что смотреть после первого ролика
-
-| Запись | Исходная отметка | Действие пользователя |
-|---|---:|---|
-| X-1.mov | 22 сек | Описать событие вокруг отметки |
-| X-2.mov | 10 сек | Описать отдельно; проверить, похоже ли действие на X-1 |
-| Х-3.mov | Нет | Посмотреть целиком и описать корректную последовательность |
-| Х-4.mov | 57 сек | Просмотреть около 54–60 секунд |
-| Х-47.mov | 68 сек | Тот же файл по содержимому; просмотреть около 65–71 секунд |
-| Х-5.mov | Нет | Корректная запись; по содержимому совпадает с Х-48 |
-
-Сходство X-1 и X-2 пока не установлено. Сравнивайте только после просмотра. Совпадение Х-4 и Х-47 доказано хешем файла, но причины разных таймкодов неизвестны. Не удаляйте и не исправляйте их отметки автоматически.
-
-Для начала достаточно разобрать X-1, X-2 и Х-3. Затем пройдите остальные записи. При повторении одного действия используйте одинаковую категорию; разные наблюдаемые признаки пока не объединяйте только потому, что все ролики относятся к кассе.
-
-Нажатие **Скачать наблюдения JSON** создаёт локальный экспорт исходных меток, рабочих категорий и сохранённых наблюдений. Перед экспортом сохраните текущую форму. Нажатие не публикует данные. Отправлять видео и их описания внешним AI для классификации по условиям кейса нельзя.
-
-### Новый код
-
-- `app/review.py` читает каталог и сохраняет наблюдения отдельно в SQLite.
-- `static/review.html` содержит плеер и форму.
-- `static/review.js` открывает ролик, перемещает плеер к отметке и сохраняет введённое.
-- `static/review.css` оформляет новую страницу.
-- `tests/test_review.py` проверяет доступ, сохранение, границы времени и неизменность исходной разметки.
-
-В JavaScript переход к нужному моменту основан на `video.currentTime = секунды`. Плеер сообщает приблизительное время воспроизведения; такая ручная граница требует отдельной проверки перед использованием как точного доказательства.
-
-## Что делать дальше
-
-1. Вручную описать события около отмеченных секунд.
-2. Разобрать одинаковые записи с разными отметками.
-3. Создать группы разработки и проверки с учётом дублей.
-4. Найти нормативное основание для выбранных категорий.
-5. Сравнить локальные модели по качеству и скорости на доступном оборудовании.
-6. Подключить настоящие задания анализа к `/api/v1/analyze`.
-7. Проверить несколько событий в одном видео, точные таймкоды, доказательства и лимит времени.
-8. Настроить публичный адрес и отдельный ключ жюри.
-
-## Официальные руководства
-
-- Python и виртуальные окружения: https://docs.python.org/3.12/tutorial/venv.html
-- Загрузка файлов в FastAPI: https://fastapi.tiangolo.com/tutorial/request-files/
-- Проверки FastAPI: https://fastapi.tiangolo.com/tutorial/testing/
-- OpenCV Video I/O: https://docs.opencv.org/4.12.0/d4/d15/group__videoio__flags__base.html
-
-Версии установленных библиотек зафиксированы в requirements.txt. Ссылки объясняют принципы; конкретные функции нужно сверять с установленной версией.
+Third-party components retain their own licenses: FastAPI (MIT), OpenCV (Apache-2.0), ONNX Models / ResNet model materials (see their upstream license), and optional Qwen3-VL model materials (see the pinned model card). Installation fetches public artifacts only; it never uploads banking video or evidence.

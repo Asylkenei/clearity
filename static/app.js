@@ -12,7 +12,7 @@ async function refreshModelStatus() {
   try {
     const response = await fetch('/health', { signal: AbortSignal.timeout(5000) });
     const data = await response.json();
-    label.textContent = data.inspection_ready
+    label.textContent = data.analysis_ready ? 'Бинарный анализ готов. MOV до 3 минут. Результат требует проверки человеком.' : data.inspection_ready
       ? 'Модель подключена. Видео до 3 минут; обработка может занять до 4 минут.'
       : data.public_mode ? 'Модель выключена или загружается. Попросите владельца запустить её. Обзорные кадры доступны.'
         : 'Модель выключена или загружается. Запустите start-model.ps1. Обзорные кадры доступны без модели.';
@@ -145,19 +145,20 @@ form.addEventListener('submit', async (event) => {
   if (file.size > 100 * 1024 * 1024) return setStatus('Файл больше 100 МБ.', 'error');
   const key = keyInput.value.trim();
   const inspection = mode.value === 'inspect';
+  const analysis = mode.value === 'analyze';
   button.disabled = true; fileInput.disabled = true; mode.disabled = true;
   result.hidden = true; empty.hidden = false;
   setStatus('Загружаем видео на локальный сервер…');
   try {
     const body = new FormData(); body.append('file', file);
-    const submitted = await request(inspection ? '/api/v1/inspect' : '/api/v1/preview', { method: 'POST', body }, key);
+    const submitted = await request(analysis ? '/api/v1/analyze' : inspection ? '/api/v1/inspect' : '/api/v1/preview', { method: 'POST', body }, key);
     setStatus(inspection ? 'Видео получено. Локальная модель рассматривает кадры. Это может занять несколько минут…'
       : 'Видео получено. Читаем параметры и обзорные кадры…');
     const deadline = Date.now() + 5 * 60 * 1000;
     while (Date.now() < deadline) {
       const job = await request(`/api/v1/jobs/${submitted.job_id}`, {}, key);
       if (job.status === 'done') {
-        if (inspection) showInspection(job.result, file.name); else showResult(job.result, file.name);
+        if (analysis) showAnalysis(job); else if (inspection) showInspection(job.result, file.name); else showResult(job.result, file.name);
         return;
       }
       if (job.progress) setStatus('Локальная модель: обработано частей ' + job.progress.completed_windows
@@ -173,3 +174,34 @@ form.addEventListener('submit', async (event) => {
     refreshModelStatus();
   }
 });
+
+function showAnalysis(job) {
+  document.querySelector('#metadata').replaceChildren();
+  document.querySelector('#preview-result').hidden = true;
+  const holder = document.querySelector('#observations');
+  holder.replaceChildren();
+  const note = document.querySelector('#result-note');
+  note.hidden = false;
+  note.textContent = job.result.message;
+  for (const event of job.violations) {
+    const article = document.createElement('article'); article.className = 'observation';
+    const heading = document.createElement('h3');
+    heading.textContent = event.type + ' · ' + event.timecode_sec.toFixed(2) + ' сек';
+    const description = document.createElement('p'); description.textContent = event.description;
+    const source = document.createElement('a'); source.href = event.normative_source.url;
+    source.target = '_blank'; source.rel = 'noopener noreferrer';
+    source.textContent = event.normative_source.document + ' · ' + event.normative_source.section;
+    const context = document.createElement('p'); context.textContent = event.normative_source.note;
+    const frames = document.createElement('div'); frames.className = 'frames';
+    for (const frame of event.evidence_frames) {
+      const figure = document.createElement('figure'); const image = document.createElement('img');
+      image.src = 'data:image/jpeg;base64,' + frame.image_base64;
+      image.alt = 'Кадр для проверки на ' + frame.timestamp_sec + ' секунде';
+      const caption = document.createElement('figcaption'); caption.textContent = frame.timestamp_sec.toFixed(2) + ' сек';
+      figure.append(image, caption); frames.append(figure);
+    }
+    article.append(heading, description, source, context, frames); holder.append(article);
+  }
+  empty.hidden = true; result.hidden = false;
+  setStatus(job.verdict === 'violation' ? 'Обнаружены признаки возможных нарушений' : 'Нарушение не обнаружено', 'done');
+}

@@ -13,8 +13,8 @@
   <header class="topbar"><a href="/" class="brand"><span class="brand-mark">C</span> Clearity</a><span
       class="local"><span></span> Локальная обработка</span></header>
   <main>
-    <div class="eyebrow">УЧЕБНЫЙ ПРОЕКТ · ЛОКАЛЬНАЯ МОДЕЛЬ</div>
-    <h1>Проверяем загрузку кассового видео</h1>
+    <div class="eyebrow">CLEARITY · FORTEBANK DATATHON 26</div>
+    <h1>Проверка кассового видео</h1>
     <p class="intro">Модель рассматривает кадры записи и отмечает действия, которые стоит проверить человеку.</p>
     <p class="notice"><strong>Экспериментальный поиск возможных проблем.</strong> Точность на банковских видео ещё не
       измерена. Наблюдение модели не подтверждает нарушение; короткие действия между выбранными кадрами могут быть пропущены.</p>
@@ -29,6 +29,7 @@
           <p class="hint">Ключ остаётся в этой вкладке и не сохраняется в браузере.</p>
           <label for="mode">Что сделать с видео</label>
           <select id="mode">
+            <option value="analyze">Анализ кассовой дисциплины · ResNet</option>
             <option value="inspect">Поиск возможных проблем · локальная модель</option>
             <option value="preview">Только три обзорных кадра · быстро</option>
           </select>
@@ -40,7 +41,7 @@
             <input id="video-file" name="file" type="file" accept=".mov,video/quicktime" required>
           </label>
           <p id="file-name" class="filename">Файл пока не выбран</p>
-          <button id="submit-button" type="submit">Запустить просмотр <span aria-hidden="true">→</span></button>
+          <button id="submit-button" type="submit">Запустить анализ <span aria-hidden="true">→</span></button>
         </form>
         <p class="privacy">Видео обрабатывается на этом компьютере. Облачные AI-сервисы не используются.</p>
       </section>

@@ -31,7 +31,8 @@ def create_app(api_key: str | None = None, data_dir: Path | None = None,
                max_upload_bytes: int = 100 * 1024 * 1024,
                dataset_dir: Path | None = None,
                public_mode: bool | None = None,
-               model_client: LocalModelClient | None = None) -> FastAPI:
+               model_client: LocalModelClient | None = None,
+               detector=None) -> FastAPI:
     """Создаём приложение. Параметры позволяют проверять его в изоляции."""
     config = dotenv_values(ROOT / ".env")
     if public_mode is None:
@@ -51,6 +52,9 @@ def create_app(api_key: str | None = None, data_dir: Path | None = None,
         data_dir / "annotations.sqlite3")
     enabled = str(os.environ.get("FORTE_MODEL_ENABLED", config.get("FORTE_MODEL_ENABLED", "0"))).lower() in ("1", "true", "yes")
     model_client = model_client or (LocalModelClient() if enabled else None)
+    if detector is None and os.environ.get('FORTE_ANALYSIS_ENABLED', '0') == '1':
+        from app.detector import TrainedDetector
+        detector = TrainedDetector()
     inspection_lock = Lock()
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-worker")
 
@@ -107,9 +111,25 @@ def create_app(api_key: str | None = None, data_dir: Path | None = None,
             path.unlink(missing_ok=True)
             inspection_lock.release()
 
+    def process_analysis(job: dict, path: Path, deadline: float):
+        try:
+            result = detector.analyze(path, deadline)
+            if time.monotonic() >= deadline:
+                raise ValueError('Истекло время анализа.')
+            job.update(verdict=result['verdict'], violations=result['violations'], result=result, status='done')
+        except (ValueError, OSError) as exc:
+            job.update(status='failed', error={'code': 'ANALYSIS_FAILED', 'message': str(exc)})
+        except Exception:
+            log.exception('Analysis failed for job %s', job['job_id'])
+            job.update(status='failed', error={'code': 'ANALYSIS_FAILED', 'message': 'Не удалось завершить анализ.'})
+        finally:
+            store.put(job)
+            path.unlink(missing_ok=True)
+            inspection_lock.release()
+
     @app.get("/health")
     def health():
-        return {"status": "ok", "stage": "local_visual_review", "analysis_ready": False,
+        return {"status": "ok", "stage": "offline_visual_analysis", "analysis_ready": detector is not None,
                 "inspection_ready": model_client is not None and model_client.ready(),
                 "public_mode": public_mode}
 
@@ -139,7 +159,9 @@ def create_app(api_key: str | None = None, data_dir: Path | None = None,
         job = {"job_id": job_id, "kind": kind, "status": "processing",
                "filename": Path(file.filename or "video.mov").name, "size_bytes": size}
         store.put(job)
-        if kind == "inspection":
+        if kind == 'analysis':
+            executor.submit(process_analysis, dict(job), path, time.monotonic() + 240)
+        elif kind == "inspection":
             executor.submit(process_inspection, dict(job), path, time.monotonic() + 240)
         else:
             executor.submit(process_preview, dict(job), path)
@@ -173,13 +195,23 @@ def create_app(api_key: str | None = None, data_dir: Path | None = None,
             raise HTTPException(404, "Задание не найдено.")
         return job
 
-    @app.post("/api/v1/analyze", dependencies=[Depends(require_key)])
-    def analyze():
-        # Нельзя возвращать no_violation, если анализ ещё не реализован.
-        raise HTTPException(503, detail={
-            "code": "VIOLATION_DETECTOR_NOT_VALIDATED",
-            "message": "Нормативный детектор ещё не настроен и не проверен. Локальные наблюдения доступны через /api/v1/inspect.",
-        })
+    @app.post("/api/v1/analyze", status_code=202, dependencies=[Depends(require_key)])
+    async def analyze(file: Annotated[UploadFile | None, File()] = None):
+        if detector is None:
+            if file:
+                await file.close()
+            raise HTTPException(503, detail={'code': 'VIOLATION_DETECTOR_NOT_VALIDATED',
+                                'message': 'Бинарная модель не настроена. Задайте FORTE_ANALYSIS_ENABLED=1 после установки весов.'})
+        if file is None:
+            raise HTTPException(422, 'Нужно загрузить MOV в поле file.')
+        if not inspection_lock.acquire(blocking=False):
+            await file.close()
+            raise HTTPException(429, 'Уже идёт анализ. Повторите запрос после его завершения.')
+        try:
+            return await enqueue(file, 'analysis')
+        except Exception:
+            inspection_lock.release()
+            raise
 
     if not public_mode:
         @app.get("/api/v1/review/dataset", dependencies=[Depends(require_key)])

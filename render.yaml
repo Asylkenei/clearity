@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: clearity
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements-deploy.txt && python deployment/setup_encoder.py
+    startCommand: python -m uvicorn app.main:create_app --factory --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: FORTE_PUBLIC_MODE
+        value: "1"
+      - key: FORTE_ANALYSIS_ENABLED
+        value: "1"
+      - key: FORTE_MODEL_ENABLED
+        value: "0"
+      - key: FORTE_DATA_DIR
+        value: /tmp/clearity
+      - key: FORTE_PUBLIC_API_KEY
+        generateValue: true

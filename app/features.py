@@ -47,12 +47,17 @@ class FrameEncoder:
         cv2.setNumThreads(4)
         self.net = load_onnx(path)
         self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+        # OpenCV 4 prefixes imported ONNX nodes; OpenCV 5 uses the original names.
+        layers = self.net.getLayerNames()
+        self.pool_layer = next((name for name in layers if name.endswith('resnetv15_pool1_fwd')), None)
+        if self.pool_layer is None:
+            raise ValueError('Визуальный компонент не содержит ожидаемый слой признаков.')
 
     def encode(self, frame: np.ndarray) -> np.ndarray:
         views = []
         for full in (False, True):
             self.net.setInput(preprocess(frame, full_view=full))
-            vector = self.net.forward('resnetv15_pool1_fwd').flatten().astype(np.float64)
+            vector = self.net.forward(self.pool_layer).flatten().astype(np.float64)
             if vector.shape != (512,) or not np.isfinite(vector).all():
                 raise ValueError('Не удалось получить визуальные признаки.')
             views.append(vector / max(np.linalg.norm(vector), 1e-12))
