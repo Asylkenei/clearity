@@ -49,6 +49,8 @@ class TrainedDetector:
                     capture.set(cv2.CAP_PROP_POS_MSEC, float(times[index]) * 1000)
                     ok, frame = capture.read()
                     timestamp = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
+                    if float(times[index]) == 0 and -1.1 / capture.get(cv2.CAP_PROP_FPS) <= timestamp < 0:
+                        timestamp = 0.0
                     if not ok:
                         raise ValueError('Не удалось прочитать кадр-доказательство.')
                     h, w = frame.shape[:2]

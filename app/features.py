@@ -93,6 +93,9 @@ def extract_video_features(path: Path, encoder: FrameEncoder) -> dict:
                         adjusted = True
                         break
             timestamp = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
+            # MOV edit lists can expose the first decoded frame one frame before t=0.
+            if index == 0 and -1.1 / fps <= timestamp < 0:
+                timestamp = 0.0
             if not ok or not math.isfinite(timestamp) or timestamp < 0 or timestamp > duration + .1:
                 raise ValueError('Не удалось прочитать кадр и его время.')
             if adjusted and times and timestamp == times[-1]:

@@ -79,3 +79,30 @@ def test_padding_in_mov_frame_count_uses_the_last_real_decodable_frame(tmp_path,
     data = m.extract_video_features(path, PixelEncoder())
     assert data['times'] == pytest.approx([0, 2, 4, 5.9], abs=.05)
     assert data['end_adjustment_frames'] == 2
+
+
+def test_mov_edit_list_negative_first_timestamp_is_normalized_to_video_origin(tmp_path, monkeypatch):
+    m = features()
+    path = tmp_path / 'edit-list.mov'
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*'mp4v'), 10, (160, 120))
+    for i in range(30):
+        writer.write(np.full((120, 160, 3), i, np.uint8))
+    writer.release()
+    actual_capture = cv2.VideoCapture
+    class EditListCapture:
+        def __init__(self, filename):
+            self.capture = actual_capture(filename)
+        def get(self, prop):
+            value = self.capture.get(prop)
+            if prop == cv2.CAP_PROP_POS_MSEC and self.capture.get(cv2.CAP_PROP_POS_FRAMES) == 1:
+                return -100
+            return value
+        def __getattr__(self, name):
+            return getattr(self.capture, name)
+    class PixelEncoder:
+        def encode(self, frame):
+            return frame.mean(axis=(0, 1))
+    monkeypatch.setattr(cv2, 'VideoCapture', EditListCapture)
+    data = m.extract_video_features(path, PixelEncoder())
+    assert data['times'][0] == 0
+    assert data['times'][1] == pytest.approx(2, abs=.05)
